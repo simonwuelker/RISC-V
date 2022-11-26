@@ -166,11 +166,11 @@ const Core = struct {
                 // JALR
                 std.debug.assert(funct3(instruction) == 0); // expecting only JALR
                 // last bit of address is never set
-                const addr = (self.registers[@enumToInt(rs1(instruction))] + i_immediate(instruction)) & ~@as(u32, 1);
+                const addr = unsigned_add_signed(self.reg_read(rs1(instruction)), @bitCast(i12, i_immediate(instruction))) & ~@as(u32, 1);
 
-                // TODO spec says we need to add 4 to the addr but stuff breaks if i do
-                self.reg_write(rd(instruction), addr);
+                self.reg_write(rd(instruction), self.pc + 4);
                 self.pc = addr;
+                return true; // don't increment pc again
             },
             0b0110111 => {
                 // LUI
@@ -183,7 +183,6 @@ const Core = struct {
                         // ADDI
                         // Immediate is considered to be signed
                         const signed_immediate = @bitCast(i12, i_immediate(instruction));
-                        // std.debug.print("signed immediate {d}\n", .{signed_immediate});
                         self.reg_write(rd(instruction), unsigned_add_signed(self.reg_read(rs1(instruction)), signed_immediate));
                     },
                     0b001 => {
@@ -339,7 +338,7 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     while (try iterator.next()) |entry| {
         if (entry.kind == .File) {
-            if (std.mem.startsWith(u8, entry.name, "rv32ui-p-") and std.mem.startsWith(u8, entry.name, "rv32") and !std.mem.endsWith(u8, entry.name, ".dump")) {
+            if (std.mem.startsWith(u8, entry.name, "rv32ui-p") and std.mem.startsWith(u8, entry.name, "rv32") and !std.mem.endsWith(u8, entry.name, ".dump")) {
                 std.debug.print("running {s} ...\n", .{entry.name});
                 _ = try std.fmt.format(stdout, "{s:<20}", .{entry.name});
 
