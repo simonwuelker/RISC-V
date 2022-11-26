@@ -167,7 +167,8 @@ const Core = struct {
         switch (opcode) {
             0b1101111 => {
                 // JAL
-                self.reg_write(rd(instruction), self.pc);
+                self.reg_write(rd(instruction), self.pc + 4);
+                // TODO: the immediate should be signed
                 self.pc += j_immediate(instruction);
                 return true; // don't increment pc again
             },
@@ -222,7 +223,7 @@ const Core = struct {
             },
             0b0010111 => {
                 // AUIPC
-                self.reg_write(rd(instruction), self.pc + u_immediate(instruction));
+                self.reg_write(rd(instruction), self.pc +% u_immediate(instruction));
             },
             0b0100011 => {
                 // Store instructions
@@ -247,7 +248,24 @@ const Core = struct {
                         switch (funct7(instruction)) {
                             0b0000000 => {
                                 // ADD
-                                self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) + self.reg_read(rs2(instruction)));
+                                self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) +% self.reg_read(rs2(instruction)));
+                            },
+                            0b0100000 => {
+                                // SUB
+                                self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) -% self.reg_read(rs2(instruction)));
+                            },
+                            else => {
+                                std.debug.print("unimplemented funct7 for R-Instruction: 0b{b:0>7}\n", .{funct7(instruction)});
+                                return false;
+                            },
+                        }
+                    },
+                    0b101 => {
+                        switch (funct7(instruction)) {
+                            0b0100000 => {
+                                // SRA
+                                const result = std.math.shr(i32, @bitCast(i32, self.reg_read(rs1(instruction))), self.reg_read(rs2(instruction)));
+                                self.reg_write(rd(instruction), @bitCast(u32, result));
                             },
                             else => {
                                 std.debug.print("unimplemented funct7 for R-Instruction: 0b{b:0>7}\n", .{funct7(instruction)});
@@ -403,8 +421,7 @@ pub fn main() !void {
                     _ = try stdout.write("Success!\n");
                 } else {
                     _ = try stdout.write("Failed.\n");
-
-                    std.debug.print("Fail: Execution stopped at 0x{x:0>8} with exit code {d}\n", .{ core.pc, exit_code });
+                    std.debug.print("Failed: Execution stopped at 0x{x:0>8} with exit code {d}\n", .{ core.pc, exit_code });
                 }
             }
         }
