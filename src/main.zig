@@ -70,6 +70,15 @@ fn funct7(instruction: u32) u7 {
     return @truncate(u7, instruction >> 25);
 }
 
+fn sign_extend(value: u32, bits: u5) u32 {
+    if (value & (@as(u32, 1) << bits - 1) != 0) {
+        // Set all leading bits
+        return value | (~@as(u32, 0) & ~((@as(u32, 1) << bits) - 1));
+    } else {
+        return value;
+    }
+}
+
 /// This is a hacky way of adding a signed offset to a unsigned number
 /// This function doesn't perform any safety checks, only call this when you know what you are doing (never)
 /// Note that the zig spec guarantees that signed integers are represented in two's complement.
@@ -189,13 +198,21 @@ const Core = struct {
                         // SLLI
                         self.reg_write(rd(instruction), std.math.shl(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
                     },
+                    0b100 => {
+                        // XORI
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) ^ sign_extend(i_immediate(instruction), 12));
+                    },
                     0b101 => {
                         // SRLI
                         self.reg_write(rd(instruction), std.math.shr(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
                     },
                     0b110 => {
                         // ORI
-                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | i_immediate(instruction));
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | sign_extend(i_immediate(instruction), 12));
+                    },
+                    0b111 => {
+                        // ANDI
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) & sign_extend(i_immediate(instruction), 12));
                     },
                     else => {
                         std.debug.print("unimplemented funct3 for I-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
