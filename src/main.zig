@@ -16,147 +16,59 @@ const Register = enum(u5) {
     // zig fmt: on
 };
 
-const J_Instruction = struct {
-    immediate: u32,
-    rd: Register,
+fn j_immediate(instruction: u32) u32 {
+    // TODO shrink returned int size
+    var immediate: u32 = 0;
+    immediate |= ((instruction >> 21) & 0b1111111111) << 1;
+    immediate |= ((instruction >> 20) & 0b1) << 11;
+    immediate |= ((instruction >> 12) & 0b11111111) << 12;
+    immediate |= ((instruction >> 31) & 0b1) << 20;
+    return immediate;
+}
 
-    const Self = @This();
+fn b_immediate(instruction: u32) i13 {
+    var immediate: u13 = 0;
+    immediate |= @truncate(u13, ((instruction >> 7) & 0b1) << 11);
+    immediate |= @truncate(u13, ((instruction >> 8) & 0b1111) << 1);
+    immediate |= @truncate(u13, ((instruction >> 25) & 0b111111) << 5);
+    immediate |= @truncate(u13, ((instruction >> 31) & 0b1) << 12);
+    return @bitCast(i13, immediate);
+}
 
-    pub fn parse(instruction: u32) Self {
-        var immediate: u32 = 0;
-        immediate |= ((instruction >> 21) & 0b1111111111) << 1;
-        immediate |= ((instruction >> 20) & 0b1) << 11;
-        immediate |= ((instruction >> 12) & 0b11111111) << 12;
-        immediate |= ((instruction >> 31) & 0b1) << 20;
+fn s_immediate(instruction: u32) u12 {
+    var immediate: u12 = 0;
+    immediate |= @truncate(u12, (instruction >> 7) & 0b11111);
+    immediate |= @truncate(u12, instruction >> 25);
+    return immediate;
+}
 
-        return Self{
-            .immediate = immediate,
-            .rd = @intToEnum(Register, instruction >> 7),
-        };
-    }
-};
+fn u_immediate(instruction: u32) u32 {
+    return instruction & ~((@as(u32, 1) << 12) - 1);
+}
 
-const B_Instruction = struct {
-    immediate: i13,
-    rs1: Register,
-    rs2: Register,
-    funct3: u3,
+fn i_immediate(instruction: u32) u12 {
+    return @truncate(u12, instruction >> 20);
+}
 
-    const Self = @This();
+fn rd(instruction: u32) Register {
+    return @intToEnum(Register, instruction >> 7);
+}
 
-    pub fn parse(instruction: u32) Self {
-        const rs1 = @intToEnum(Register, (instruction >> 15) & 0b11111);
-        const rs2 = @intToEnum(Register, (instruction >> 20) & 0b11111);
-        const funct3 = @truncate(u3, instruction >> 12);
+fn rs1(instruction: u32) Register {
+    return @intToEnum(Register, (instruction >> 15) & 0b11111);
+}
 
-        // The immediate is actually a signed value but we do a bitcast later
-        var immediate: u13 = 0;
-        immediate |= @truncate(u13, ((instruction >> 7) & 0b1) << 11);
-        immediate |= @truncate(u13, ((instruction >> 8) & 0b1111) << 1);
-        immediate |= @truncate(u13, ((instruction >> 25) & 0b111111) << 5);
-        immediate |= @truncate(u13, ((instruction >> 31) & 0b1) << 12);
+fn rs2(instruction: u32) Register {
+    return @intToEnum(Register, (instruction >> 20) & 0b11111);
+}
 
-        return Self{
-            .immediate = @bitCast(i13, immediate),
-            .rs1 = rs1,
-            .rs2 = rs2,
-            .funct3 = funct3,
-        };
-    }
-};
+fn funct3(instruction: u32) u3 {
+    return @truncate(u3, instruction >> 12);
+}
 
-const I_Instruction = struct {
-    immediate: u12,
-    rs1: Register,
-    rd: Register,
-    funct3: u3,
-
-    const Self = @This();
-
-    pub fn parse(instruction: u32) Self {
-        const immediate = @truncate(u12, instruction >> 20);
-        const rd = @intToEnum(Register, (instruction >> 7) & 0b11111);
-        const rs1 = @intToEnum(Register, (instruction >> 15) & 0b11111);
-        const funct3 = @truncate(u3, instruction >> 12);
-
-        return Self{
-            .immediate = immediate,
-            .rs1 = rs1,
-            .rd = rd,
-            .funct3 = funct3,
-        };
-    }
-};
-
-const U_Instruction = struct {
-    /// First 12 bits are not used
-    immediate: u32,
-    rd: Register,
-
-    const Self = @This();
-
-    pub fn parse(instruction: u32) Self {
-        // mask off lower 12 bits
-        const immediate = instruction & ~((@as(u32, 1) << 12) - 1);
-        const rd = @intToEnum(Register, (instruction >> 7) & 0b11111);
-
-        return Self{
-            .immediate = immediate,
-            .rd = rd,
-        };
-    }
-};
-
-const R_Instruction = struct {
-    funct7: u7,
-    rs2: Register,
-    rs1: Register,
-    funct3: u3,
-    rd: Register,
-
-    const Self = @This();
-
-    pub fn parse(instruction: u32) Self {
-        const rd = @intToEnum(Register, @truncate(u5, instruction >> 7));
-        const funct3 = @truncate(u3, instruction >> 12);
-        const rs1 = @intToEnum(Register, @truncate(u5, instruction >> 15));
-        const rs2 = @intToEnum(Register, @truncate(u5, instruction >> 20));
-        const funct7 = @truncate(u7, instruction >> 25);
-
-        return Self{
-            .rd = rd,
-            .funct3 = funct3,
-            .rs1 = rs1,
-            .rs2 = rs2,
-            .funct7 = funct7,
-        };
-    }
-};
-
-const S_Instruction = struct {
-    immediate: u12,
-    rs1: Register,
-    rs2: Register,
-    funct3: u3,
-
-    const Self = @This();
-
-    pub fn parse(instruction: u32) Self {
-        const funct3 = @truncate(u3, instruction >> 12);
-        const rs1 = @intToEnum(Register, @truncate(u5, instruction >> 15));
-        const rs2 = @intToEnum(Register, @truncate(u5, instruction >> 20));
-        var immediate: u12 = 0;
-        immediate |= @truncate(u12, (instruction >> 7) & 0b11111);
-        immediate |= @truncate(u12, instruction >> 25);
-
-        return Self{
-            .immediate = immediate,
-            .rs1 = rs1,
-            .rs2 = rs2,
-            .funct3 = funct3,
-        };
-    }
-};
+fn funct7(instruction: u32) u7 {
+    return @truncate(u7, instruction >> 25);
+}
 
 /// This is a hacky way of adding a signed offset to a unsigned number
 /// This function doesn't perform any safety checks, only call this when you know what you are doing (never)
@@ -246,148 +158,135 @@ const Core = struct {
         switch (opcode) {
             0b1101111 => {
                 // JAL
-                const j = J_Instruction.parse(instruction);
-                self.reg_write(j.rd, self.pc);
-                self.pc += j.immediate;
+                self.reg_write(rd(instruction), self.pc);
+                self.pc += j_immediate(instruction);
                 return true; // don't increment pc again
             },
             0b1100111 => {
                 // JALR
-                const i = I_Instruction.parse(instruction);
-                std.debug.assert(i.funct3 == 0); // expecting only JALR
+                std.debug.assert(funct3(instruction) == 0); // expecting only JALR
                 // last bit of address is never set
-                const addr = (self.registers[@enumToInt(i.rs1)] + i.immediate) & ~@as(u32, 1);
+                const addr = (self.registers[@enumToInt(rs1(instruction))] + i_immediate(instruction)) & ~@as(u32, 1);
 
                 // TODO spec says we need to add 4 to the addr but stuff breaks if i do
-                self.reg_write(i.rd, addr);
+                self.reg_write(rd(instruction), addr);
                 self.pc = addr;
             },
             0b0110111 => {
                 // LUI
-                const u = U_Instruction.parse(instruction);
-                std.debug.assert(u.immediate & 0b111111111111 == 0);
-                self.reg_write(u.rd, u.immediate);
+                std.debug.assert(u_immediate(instruction) & 0b111111111111 == 0);
+                self.reg_write(rd(instruction), u_immediate(instruction));
             },
             0b0010011 => {
-                const i = I_Instruction.parse(instruction);
-                switch (i.funct3) {
+                switch (funct3(instruction)) {
                     0b000 => {
                         // ADDI
                         // Immediate is considered to be signed
-                        const signed_immediate = @bitCast(i12, i.immediate);
+                        const signed_immediate = @bitCast(i12, i_immediate(instruction));
                         // std.debug.print("signed immediate {d}\n", .{signed_immediate});
-                        self.reg_write(i.rd, unsigned_add_signed(self.reg_read(i.rs1), signed_immediate));
+                        self.reg_write(rd(instruction), unsigned_add_signed(self.reg_read(rs1(instruction)), signed_immediate));
                     },
                     0b001 => {
                         // SLLI
-                        self.reg_write(i.rd, std.math.shl(u32, self.reg_read(i.rs1), i.immediate));
+                        self.reg_write(rd(instruction), std.math.shl(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
                     },
                     0b101 => {
                         // SRLI
-                        self.reg_write(i.rd, std.math.shr(u32, self.reg_read(i.rs1), i.immediate));
+                        self.reg_write(rd(instruction), std.math.shr(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
                     },
                     0b110 => {
                         // ORI
-                        self.reg_write(i.rd, self.reg_read(i.rs1) | i.immediate);
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | i_immediate(instruction));
                     },
                     else => {
-                        std.debug.print("unimplemented funct3 for I-Instruction: 0b{b:0>3}\n", .{i.funct3});
+                        std.debug.print("unimplemented funct3 for I-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
                         return false;
                     },
                 }
             },
             0b0010111 => {
                 // AUIPC
-                const u = U_Instruction.parse(instruction);
-                self.reg_write(u.rd, self.pc + u.immediate);
+                self.reg_write(rd(instruction), self.pc + u_immediate(instruction));
             },
             0b0100011 => {
                 // Store instructions
                 // These store part of rs2 in [rs1 + imm]
-                const s = S_Instruction.parse(instruction);
 
-                switch (s.funct3) {
+                switch (funct3(instruction)) {
                     0b010 => {
                         // SW
-                        std.debug.print("imm 0x{x:0>8}\n", .{s.immediate});
-                        std.debug.print("{s} {s}\n", .{ @tagName(s.rs1), @tagName(s.rs2) });
-                        self.dump();
                         var buffer: [4]u8 = undefined;
-                        std.mem.writeIntSliceLittle(u32, &buffer, self.reg_read(s.rs2));
-                        self.write(self.reg_read(s.rs1) + s.immediate, &buffer);
+                        std.mem.writeIntSliceLittle(u32, &buffer, self.reg_read(rs2(instruction)));
+                        self.write(self.reg_read(rs1(instruction)) + s_immediate(instruction), &buffer);
                     },
                     else => {
-                        std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{s.funct3});
+                        std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
                         return false;
                     },
                 }
             },
             0b0110011 => {
-                const r = R_Instruction.parse(instruction);
-                switch (r.funct3) {
+                switch (funct3(instruction)) {
                     0b000 => {
-                        switch (r.funct7) {
+                        switch (funct7(instruction)) {
                             0b0000000 => {
                                 // ADD
-                                self.reg_write(r.rd, self.reg_read(r.rs1) + self.reg_read(r.rs2));
+                                self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) + self.reg_read(rs2(instruction)));
                             },
                             else => {
-                                std.debug.print("unimplemented funct7 for R-Instruction: 0b{b:0>7}\n", .{r.funct7});
+                                std.debug.print("unimplemented funct7 for R-Instruction: 0b{b:0>7}\n", .{funct7(instruction)});
                                 return false;
                             },
                         }
                     },
                     0b111 => {
                         // AND
-                        std.debug.assert(r.funct7 == 0b0000000);
-                        self.reg_write(r.rd, self.reg_read(r.rs1) & self.reg_read(r.rs2));
+                        std.debug.assert(funct7(instruction) == 0b0000000);
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) & self.reg_read(rs2(instruction)));
                     },
                     else => {
-                        std.debug.print("unimplemented funct3 for R-Instruction: 0b{b:0>3}\n", .{r.funct3});
+                        std.debug.print("unimplemented funct3 for R-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
                         return false;
                     },
                 }
             },
             0b1100011 => {
-                const b = B_Instruction.parse(instruction);
-                switch (b.funct3) {
+                switch (funct3(instruction)) {
                     0b000 => {
                         // BEQ
-                        if (self.reg_read(b.rs1) == self.reg_read(b.rs2)) {
-                            self.pc = unsigned_add_signed(self.pc, b.immediate);
+                        if (self.reg_read(rs1(instruction)) == self.reg_read(rs2(instruction))) {
+                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
                             return true;
                         }
                     },
                     0b001 => {
                         // BNE
-                        if (self.reg_read(b.rs1) != self.reg_read(b.rs2)) {
-                            self.pc = unsigned_add_signed(self.pc, b.immediate);
+                        if (self.reg_read(rs1(instruction)) != self.reg_read(rs2(instruction))) {
+                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
                             return true;
                         }
                     },
                     0b100 => {
                         // BLT
-                        if (@bitCast(i32, self.reg_read(b.rs1)) < @bitCast(i32, self.reg_read(b.rs2))) {
-                            self.pc = unsigned_add_signed(self.pc, b.immediate);
+                        if (@bitCast(i32, self.reg_read(rs1(instruction))) < @bitCast(i32, self.reg_read(rs2(instruction)))) {
+                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
                             return true;
                         }
                     },
                     else => {
-                        std.debug.print("unimplemented funct3 for B-Instruction: 0b{b:0>3}\n", .{b.funct3});
+                        std.debug.print("unimplemented funct3 for B-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
                         return false;
                     },
                 }
             },
             0b1110011 => {
-                const i = I_Instruction.parse(instruction);
-
-                switch (i.funct3) {
+                switch (funct3(instruction)) {
                     0b000 => {
                         // Environment instruction
-                        std.debug.assert(i.rd == Register.x0);
-                        std.debug.assert(i.rs1 == Register.x0);
+                        std.debug.assert(rd(instruction) == Register.x0);
+                        std.debug.assert(rs1(instruction) == Register.x0);
 
-                        switch (i.immediate) {
+                        switch (i_immediate(instruction)) {
                             0 => {
                                 // ECALL
                                 if (self.reg_read(Register.x17) == 93) {
@@ -404,8 +303,7 @@ const Core = struct {
                                 // doesn't seem to do anything important, so I'll ignore it for now...
                             },
                             else => {
-                                std.debug.print("unimplemented immediate for Environment-Instruction: 0b{b:0>12}\n", .{i.immediate});
-                                self.dump();
+                                std.debug.print("unimplemented immediate for Environment-Instruction: 0b{b:0>12}\n", .{i_immediate(instruction)});
                                 return false;
                             },
                         }
@@ -503,10 +401,4 @@ fn read_section_contents(hdr: elf.Elf64_Shdr, file: File, gpa: Allocator) ![]u8 
     const bytes_read = try file.preadAll(buffer, hdr.sh_offset);
     std.debug.assert(bytes_read == hdr.sh_size);
     return buffer;
-}
-
-/// Wait for user input, used for debugging only
-fn wait() !void {
-    const stdin = std.io.getStdIn();
-    _ = try stdin.reader().readByte();
 }
