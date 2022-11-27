@@ -204,8 +204,23 @@ const Core = struct {
                         self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) ^ sign_extend(i_immediate(instruction), 12));
                     },
                     0b101 => {
-                        // SRLI
-                        self.reg_write(rd(instruction), std.math.shr(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
+                        switch (funct7(instruction)) {
+                            0b0000000 => {
+                                // SRLI
+                                self.reg_write(rd(instruction), std.math.shr(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
+                            },
+                            0b0100000 => {
+                                // SRAI
+                                // Note that shifts use a special instruction encoding, the immediate value is stored in rs2 instead of the immediate
+                                const shift = @enumToInt(rs2(instruction));
+                                const result = std.math.shr(i32, @bitCast(i32, self.reg_read(rs1(instruction))), shift);
+                                self.reg_write(rd(instruction), @bitCast(u32, result));
+                            },
+                            else => {
+                                std.debug.print("unimplemented funct7 for I-Instruction: 0b{b:0>7}\n", .{funct7(instruction)});
+                                return false;
+                            },
+                        }
                     },
                     0b110 => {
                         // ORI
@@ -259,6 +274,10 @@ const Core = struct {
                                 return false;
                             },
                         }
+                    },
+                    0b001 => {
+                        // SLL
+                        self.reg_write(rd(instruction), std.math.shl(u32, self.reg_read(rs1(instruction)), self.reg_read(rs2(instruction)) & 0b11111));
                     },
                     0b101 => {
                         switch (funct7(instruction)) {
