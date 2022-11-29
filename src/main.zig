@@ -17,7 +17,6 @@ const Register = enum(u5) {
 };
 
 fn j_immediate(instruction: u32) u32 {
-    // TODO shrink returned int size
     var immediate: u32 = 0;
     immediate |= ((instruction >> 21) & 0b1111111111) << 1;
     immediate |= ((instruction >> 20) & 0b1) << 11;
@@ -70,7 +69,13 @@ fn funct7(instruction: u32) u7 {
     return @truncate(u7, instruction >> 25);
 }
 
-fn sign_extend(value: u32, bits: u5) u32 {
+/// Sign-extends a value to 32 bit
+fn sign_extend(value: anytype) u32 {
+    const bits = @typeInfo(@TypeOf(value)).Int.bits;
+    if (32 <= bits) {
+        @compileError("sign extending a value with 32+ bit does not make sense");
+    }
+    std.debug.assert(bits < 32);
     if (value & (@as(u32, 1) << bits - 1) != 0) {
         // Set all leading bits
         return value | (~@as(u32, 0) & ~((@as(u32, 1) << bits) - 1));
@@ -138,16 +143,16 @@ const Core = struct {
         switch (opcode) {
             0b1101111 => {
                 // JAL
+                // The immediate is signed (but we dont need to sign extend it because the 31 bit is already the sign bit)
                 self.reg_write(rd(instruction), self.pc + 4);
-                // TODO: the immediate should be signed
-                self.pc += j_immediate(instruction);
+                self.pc +%= j_immediate(instruction);
                 return true; // don't increment pc again
             },
             0b1100111 => {
                 // JALR
                 std.debug.assert(funct3(instruction) == 0); // expecting only JALR
                 // last bit of address is never set
-                const addr = (self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12)) & ~@as(u32, 1);
+                const addr = (self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction))) & ~@as(u32, 1);
 
                 self.reg_write(rd(instruction), self.pc + 4);
                 self.pc = addr;
@@ -162,15 +167,31 @@ const Core = struct {
                 switch (funct3(instruction)) {
                     0b000 => {
                         // ADDI
-                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12));
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction)));
                     },
                     0b001 => {
                         // SLLI
                         self.reg_write(rd(instruction), std.math.shl(u32, self.reg_read(rs1(instruction)), i_immediate(instruction)));
                     },
+                    0b010 => {
+                        // SLTI
+                        if (@bitCast(i32, self.reg_read(rs1(instruction))) < @bitCast(i32, sign_extend(i_immediate(instruction)))) {
+                            self.reg_write(rd(instruction), 0x1);
+                        } else {
+                            self.reg_write(rd(instruction), 0x0);
+                        }
+                    },
+                    0b011 => {
+                        // SLTIU
+                        if (self.reg_read(rs1(instruction)) < sign_extend(i_immediate(instruction))) {
+                            self.reg_write(rd(instruction), 0x1);
+                        } else {
+                            self.reg_write(rd(instruction), 0x0);
+                        }
+                    },
                     0b100 => {
                         // XORI
-                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) ^ sign_extend(i_immediate(instruction), 12));
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) ^ sign_extend(i_immediate(instruction)));
                     },
                     0b101 => {
                         switch (funct7(instruction)) {
@@ -193,15 +214,11 @@ const Core = struct {
                     },
                     0b110 => {
                         // ORI
-                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | sign_extend(i_immediate(instruction), 12));
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | sign_extend(i_immediate(instruction)));
                     },
                     0b111 => {
                         // ANDI
-                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) & sign_extend(i_immediate(instruction), 12));
-                    },
-                    else => {
-                        std.debug.print("unimplemented funct3 for I-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
-                        return false;
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) & sign_extend(i_immediate(instruction)));
                     },
                 }
             },
@@ -211,18 +228,32 @@ const Core = struct {
             },
             0b0000011 => {
                 // Load instructions
-                const addr = self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12);
+                const addr = self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction));
                 switch (funct3(instruction)) {
                     0b000 => {
                         // LB
-                        self.reg_write(rd(instruction), self.memory[addr - 0x80000000]);
+                        self.reg_write(rd(instruction), sign_extend(self.memory[addr - 0x80000000]));
+                    },
+                    0b001 => {
+                        // LH
+                        const value = sign_extend(std.mem.readIntLittle(u16, self.memory[addr - 0x80000000 ..][0..2]));
+                        self.reg_write(rd(instruction), value);
                     },
                     0b010 => {
                         // LW
                         self.reg_write(rd(instruction), std.mem.readIntLittle(u32, self.memory[addr - 0x80000000 ..][0..4]));
                     },
+                    0b100 => {
+                        // LBU
+                        self.reg_write(rd(instruction), self.memory[addr - 0x80000000]);
+                    },
+                    0b101 => {
+                        // LH
+                        const value = std.mem.readIntLittle(u16, self.memory[addr - 0x80000000 ..][0..2]);
+                        self.reg_write(rd(instruction), value);
+                    },
                     else => {
-                        std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
+                        std.debug.print("unimplemented funct3 for Load-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
                         return false;
                     },
                 }
@@ -230,15 +261,23 @@ const Core = struct {
             0b0100011 => {
                 // Store instructions
                 // These store part of rs2 in [rs1 + imm]
-                const addr = self.reg_read(rs1(instruction)) +% sign_extend(s_immediate(instruction), 12);
+                const addr = self.reg_read(rs1(instruction)) +% sign_extend(s_immediate(instruction));
                 switch (funct3(instruction)) {
+                    0b000 => {
+                        // SB
+                        self.write(addr, &[1]u8{@truncate(u8, self.reg_read(rs2(instruction)))});
+                    },
+                    0b001 => {
+                        // SH
+                        var buffer: [2]u8 = undefined;
+                        std.mem.writeIntSliceLittle(u16, &buffer, @truncate(u16, self.reg_read(rs2(instruction))));
+                        self.write(addr, &buffer);
+                    },
                     0b010 => {
                         // SW
                         var buffer: [4]u8 = undefined;
                         std.mem.writeIntSliceLittle(u32, &buffer, self.reg_read(rs2(instruction)));
                         self.write(addr, &buffer);
-
-                        std.debug.print("after store: 0x{x:0>8}\n", .{self.r32(addr)});
                     },
                     else => {
                         std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
@@ -268,6 +307,27 @@ const Core = struct {
                         // SLL
                         self.reg_write(rd(instruction), std.math.shl(u32, self.reg_read(rs1(instruction)), self.reg_read(rs2(instruction)) & 0b11111));
                     },
+                    0b010 => {
+                        // SLTU
+                        if (@bitCast(i32, self.reg_read(rs1(instruction))) < @bitCast(i32, self.reg_read(rs2(instruction)))) {
+                            self.reg_write(rd(instruction), 0x1);
+                        } else {
+                            self.reg_write(rd(instruction), 0x0);
+                        }
+                    },
+                    0b011 => {
+                        // SLTU
+                        if (self.reg_read(rs1(instruction)) < self.reg_read(rs2(instruction))) {
+                            self.reg_write(rd(instruction), 0x1);
+                        } else {
+                            self.reg_write(rd(instruction), 0x0);
+                        }
+                    },
+                    0b100 => {
+                        // XOR
+                        std.debug.assert(funct7(instruction) == 0b0000000);
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) ^ self.reg_read(rs2(instruction)));
+                    },
                     0b101 => {
                         switch (funct7(instruction)) {
                             0b0000000 => {
@@ -285,14 +345,15 @@ const Core = struct {
                             },
                         }
                     },
+                    0b110 => {
+                        // OR
+                        std.debug.assert(funct7(instruction) == 0b0000000);
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) | self.reg_read(rs2(instruction)));
+                    },
                     0b111 => {
                         // AND
                         std.debug.assert(funct7(instruction) == 0b0000000);
                         self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) & self.reg_read(rs2(instruction)));
-                    },
-                    else => {
-                        std.debug.print("unimplemented funct3 for R-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
-                        return false;
                     },
                 }
             },
@@ -301,35 +362,42 @@ const Core = struct {
                     0b000 => {
                         // BEQ
                         if (self.reg_read(rs1(instruction)) == self.reg_read(rs2(instruction))) {
-                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            self.pc +%= sign_extend(b_immediate(instruction));
                             return true;
                         }
                     },
                     0b001 => {
                         // BNE
                         if (self.reg_read(rs1(instruction)) != self.reg_read(rs2(instruction))) {
-                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            self.pc +%= sign_extend(b_immediate(instruction));
                             return true;
                         }
                     },
                     0b100 => {
                         // BLT
                         if (@bitCast(i32, self.reg_read(rs1(instruction))) < @bitCast(i32, self.reg_read(rs2(instruction)))) {
-                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            self.pc +%= sign_extend(b_immediate(instruction));
                             return true;
                         }
                     },
                     0b101 => {
                         // BGE
                         if (@bitCast(i32, self.reg_read(rs1(instruction))) >= @bitCast(i32, self.reg_read(rs2(instruction)))) {
-                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            self.pc +%= sign_extend(b_immediate(instruction));
+                            return true;
+                        }
+                    },
+                    0b110 => {
+                        // BLT
+                        if (self.reg_read(rs1(instruction)) < self.reg_read(rs2(instruction))) {
+                            self.pc +%= sign_extend(b_immediate(instruction));
                             return true;
                         }
                     },
                     0b111 => {
                         // BGEU
                         if (self.reg_read(rs1(instruction)) >= self.reg_read(rs2(instruction))) {
-                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            self.pc +%= sign_extend(b_immediate(instruction));
                             return true;
                         }
                     },
@@ -403,7 +471,6 @@ pub fn main() !void {
     while (try iterator.next()) |entry| {
         if (entry.kind == .File) {
             if (std.mem.startsWith(u8, entry.name, "rv32ui-p") and std.mem.startsWith(u8, entry.name, "rv32") and !std.mem.endsWith(u8, entry.name, ".dump")) {
-                std.debug.print("running {s} ...\n", .{entry.name});
                 _ = try std.fmt.format(stdout, "{s:<20}", .{entry.name});
 
                 var core = Core{};
@@ -433,7 +500,7 @@ pub fn main() !void {
                 for (shdrs.items) |shdr| {
                     const name = std.mem.sliceTo(@ptrCast([*:0]u8, shstrtab.items.ptr + shdr.sh_name), 0x0);
 
-                    if (std.mem.eql(u8, name, ".text") or std.mem.eql(u8, name, ".text.init")) {
+                    if (std.mem.eql(u8, name, ".text") or std.mem.eql(u8, name, ".text.init") or std.mem.eql(u8, name, ".data")) {
                         const section_data = try read_section_contents(shdr, file, gpa);
                         core.write(shdr.sh_addr, section_data);
                         gpa.free(section_data);
@@ -441,9 +508,8 @@ pub fn main() !void {
                 }
 
                 // Run program
-                while (core.step()) {
-                    core.dump();
-                }
+                while (core.step()) {}
+
                 const exit_code = core.reg_read(Register.x10);
                 tests_run += 1;
                 if (exit_code == 0) {
@@ -451,7 +517,6 @@ pub fn main() !void {
                     tests_passed += 1;
                 } else {
                     _ = try stdout.write("Failed.\n");
-                    std.debug.print("Failed: Execution stopped at 0x{x:0>8} with exit code {d}\n", .{ core.pc, exit_code });
                     tests_failed += 1;
                 }
             }
