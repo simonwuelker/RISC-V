@@ -26,19 +26,19 @@ fn j_immediate(instruction: u32) u32 {
     return immediate;
 }
 
-fn b_immediate(instruction: u32) i13 {
+fn b_immediate(instruction: u32) u13 {
     var immediate: u13 = 0;
     immediate |= @truncate(u13, ((instruction >> 7) & 0b1) << 11);
     immediate |= @truncate(u13, ((instruction >> 8) & 0b1111) << 1);
     immediate |= @truncate(u13, ((instruction >> 25) & 0b111111) << 5);
     immediate |= @truncate(u13, ((instruction >> 31) & 0b1) << 12);
-    return @bitCast(i13, immediate);
+    return immediate;
 }
 
 fn s_immediate(instruction: u32) u12 {
     var immediate: u12 = 0;
     immediate |= @truncate(u12, (instruction >> 7) & 0b11111);
-    immediate |= @truncate(u12, instruction >> 25);
+    immediate |= @truncate(u12, instruction >> 25) << 5;
     return immediate;
 }
 
@@ -77,35 +77,6 @@ fn sign_extend(value: u32, bits: u5) u32 {
     } else {
         return value;
     }
-}
-
-/// This is a hacky way of adding a signed offset to a unsigned number
-/// This function doesn't perform any safety checks, only call this when you know what you are doing (never)
-/// Note that the zig spec guarantees that signed integers are represented in two's complement.
-/// If that were not the case, this would not work.
-/// (https://github.com/ziglang/zig/issues/1723)
-fn unsigned_add_signed(base: anytype, offset: anytype) @TypeOf(base) {
-    // Build a few types
-    const nbits = @typeInfo(@TypeOf(base)).Int.bits;
-    const signed = @Type(.{ .Int = std.builtin.Type.Int{
-        .signedness = .signed,
-        .bits = nbits,
-    } });
-    const sign_extended = @Type(.{ .Int = std.builtin.Type.Int{
-        .signedness = .signed,
-        .bits = nbits + 1,
-    } });
-
-    const unsigned_extended = @Type(.{ .Int = std.builtin.Type.Int{
-        .signedness = .signed,
-        .bits = nbits + 1,
-    } });
-
-    // Add a sign bit to the unsigned value (always zero), then add the signed value as you usually would
-    // and remove the extra bit again
-    var signed_base: sign_extended = @bitCast(sign_extended, @as(unsigned_extended, base));
-    signed_base += offset; // all of this work for one line
-    return @bitCast(@TypeOf(base), @truncate(signed, signed_base));
 }
 
 const Core = struct {
@@ -176,7 +147,7 @@ const Core = struct {
                 // JALR
                 std.debug.assert(funct3(instruction) == 0); // expecting only JALR
                 // last bit of address is never set
-                const addr = unsigned_add_signed(self.reg_read(rs1(instruction)), @bitCast(i12, i_immediate(instruction))) & ~@as(u32, 1);
+                const addr = (self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12)) & ~@as(u32, 1);
 
                 self.reg_write(rd(instruction), self.pc + 4);
                 self.pc = addr;
@@ -191,9 +162,7 @@ const Core = struct {
                 switch (funct3(instruction)) {
                     0b000 => {
                         // ADDI
-                        // Immediate is considered to be signed
-                        const signed_immediate = @bitCast(i12, i_immediate(instruction));
-                        self.reg_write(rd(instruction), unsigned_add_signed(self.reg_read(rs1(instruction)), signed_immediate));
+                        self.reg_write(rd(instruction), self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12));
                     },
                     0b001 => {
                         // SLLI
@@ -240,16 +209,36 @@ const Core = struct {
                 // AUIPC
                 self.reg_write(rd(instruction), self.pc +% u_immediate(instruction));
             },
+            0b0000011 => {
+                // Load instructions
+                const addr = self.reg_read(rs1(instruction)) +% sign_extend(i_immediate(instruction), 12);
+                switch (funct3(instruction)) {
+                    0b000 => {
+                        // LB
+                        self.reg_write(rd(instruction), self.memory[addr - 0x80000000]);
+                    },
+                    0b010 => {
+                        // LW
+                        self.reg_write(rd(instruction), std.mem.readIntLittle(u32, self.memory[addr - 0x80000000 ..][0..4]));
+                    },
+                    else => {
+                        std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
+                        return false;
+                    },
+                }
+            },
             0b0100011 => {
                 // Store instructions
                 // These store part of rs2 in [rs1 + imm]
-
+                const addr = self.reg_read(rs1(instruction)) +% sign_extend(s_immediate(instruction), 12);
                 switch (funct3(instruction)) {
                     0b010 => {
                         // SW
                         var buffer: [4]u8 = undefined;
                         std.mem.writeIntSliceLittle(u32, &buffer, self.reg_read(rs2(instruction)));
-                        self.write(self.reg_read(rs1(instruction)) + s_immediate(instruction), &buffer);
+                        self.write(addr, &buffer);
+
+                        std.debug.print("after store: 0x{x:0>8}\n", .{self.r32(addr)});
                     },
                     else => {
                         std.debug.print("unimplemented funct3 for S-Instruction: 0b{b:0>3}\n", .{funct3(instruction)});
@@ -281,9 +270,13 @@ const Core = struct {
                     },
                     0b101 => {
                         switch (funct7(instruction)) {
+                            0b0000000 => {
+                                // SRL
+                                self.reg_write(rd(instruction), std.math.shr(u32, self.reg_read(rs1(instruction)), self.reg_read(rs2(instruction)) & 0b11111));
+                            },
                             0b0100000 => {
                                 // SRA
-                                const result = std.math.shr(i32, @bitCast(i32, self.reg_read(rs1(instruction))), self.reg_read(rs2(instruction)));
+                                const result = std.math.shr(i32, @bitCast(i32, self.reg_read(rs1(instruction))), self.reg_read(rs2(instruction)) & 0b11111);
                                 self.reg_write(rd(instruction), @bitCast(u32, result));
                             },
                             else => {
@@ -308,21 +301,35 @@ const Core = struct {
                     0b000 => {
                         // BEQ
                         if (self.reg_read(rs1(instruction)) == self.reg_read(rs2(instruction))) {
-                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
+                            self.pc +%= sign_extend(b_immediate(instruction), 12);
                             return true;
                         }
                     },
                     0b001 => {
                         // BNE
                         if (self.reg_read(rs1(instruction)) != self.reg_read(rs2(instruction))) {
-                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
+                            self.pc +%= sign_extend(b_immediate(instruction), 12);
                             return true;
                         }
                     },
                     0b100 => {
                         // BLT
                         if (@bitCast(i32, self.reg_read(rs1(instruction))) < @bitCast(i32, self.reg_read(rs2(instruction)))) {
-                            self.pc = unsigned_add_signed(self.pc, b_immediate(instruction));
+                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            return true;
+                        }
+                    },
+                    0b101 => {
+                        // BGE
+                        if (@bitCast(i32, self.reg_read(rs1(instruction))) >= @bitCast(i32, self.reg_read(rs2(instruction)))) {
+                            self.pc +%= sign_extend(b_immediate(instruction), 12);
+                            return true;
+                        }
+                    },
+                    0b111 => {
+                        // BGEU
+                        if (self.reg_read(rs1(instruction)) >= self.reg_read(rs2(instruction))) {
+                            self.pc +%= sign_extend(b_immediate(instruction), 12);
                             return true;
                         }
                     },
@@ -390,6 +397,9 @@ pub fn main() !void {
     var tests_dir = try std.fs.cwd().openIterableDir("riscv-tests/isa", .{});
     var iterator = tests_dir.iterate();
     const stdout = std.io.getStdOut().writer();
+    var tests_run: u8 = 0;
+    var tests_passed: u8 = 0;
+    var tests_failed: u8 = 0;
     while (try iterator.next()) |entry| {
         if (entry.kind == .File) {
             if (std.mem.startsWith(u8, entry.name, "rv32ui-p") and std.mem.startsWith(u8, entry.name, "rv32") and !std.mem.endsWith(u8, entry.name, ".dump")) {
@@ -422,7 +432,6 @@ pub fn main() !void {
                 // resolve section names and load important sections
                 for (shdrs.items) |shdr| {
                     const name = std.mem.sliceTo(@ptrCast([*:0]u8, shstrtab.items.ptr + shdr.sh_name), 0x0);
-                    // std.debug.print("{s:<20}: 0x{x:0>8} - 0x{x:0>8}\n", .{ name, shdr.sh_addr, shdr.sh_size });
 
                     if (std.mem.eql(u8, name, ".text") or std.mem.eql(u8, name, ".text.init")) {
                         const section_data = try read_section_contents(shdr, file, gpa);
@@ -436,15 +445,19 @@ pub fn main() !void {
                     core.dump();
                 }
                 const exit_code = core.reg_read(Register.x10);
+                tests_run += 1;
                 if (exit_code == 0) {
                     _ = try stdout.write("Success!\n");
+                    tests_passed += 1;
                 } else {
                     _ = try stdout.write("Failed.\n");
                     std.debug.print("Failed: Execution stopped at 0x{x:0>8} with exit code {d}\n", .{ core.pc, exit_code });
+                    tests_failed += 1;
                 }
             }
         }
     }
+    _ = try std.fmt.format(stdout, "{d} tests run, {d} passed, {d} failed.\n", .{ tests_run, tests_passed, tests_failed });
 }
 
 /// Caller owns returned memory
